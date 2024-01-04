@@ -1,5 +1,5 @@
-use bytes::Bytes;
-use http_body_util::Full;
+// use bytes::Bytes;
+// use http_body_util::Full;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{body, Request, Response, Version};
@@ -34,7 +34,6 @@ pub async fn start_proxy_server(
     let listener = TcpListener::bind(bind_addr).await?;
     loop {
         let (stream, addr) = listener.accept().await?;
-        let ipv6_subnet = ipv6_subnet.clone();
         let password = password.clone();
         let io = TokioIo::new(stream);
         println!("accept request from: {}", addr);
@@ -43,11 +42,14 @@ pub async fn start_proxy_server(
                 .serve_connection(
                     io,
                     service_fn(|_req| async {
-                        // Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("Hello, World!"))))
-                        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+                        // Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+                        //     "Hello! {} {} {}",
+                        //     addr, ipv6_subnet, password
+                        // )))))
+                        Ok::<_, Infallible>(Response::new(format!(
                             "Hello! {} {} {}",
                             addr, ipv6_subnet, password
-                        )))))
+                        )))
                     }),
                 )
                 .await
