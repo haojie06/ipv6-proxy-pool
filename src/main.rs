@@ -1,6 +1,6 @@
 use clap::Parser;
 use ipnet::Ipv6Net;
-use ipv6_proxy_pool::start;
+use ipv6_proxy_pool::start_proxy_server;
 use std::net::SocketAddr;
 
 #[derive(Parser, Debug)]
@@ -16,5 +16,12 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
-    start(cli.bind_addr, cli.sub_net, cli.password);
+    run(cli.bind_addr, cli.sub_net, cli.password);
+}
+
+#[tokio::main]
+async fn run(bind_addr: SocketAddr, ipv6_subnet: Ipv6Net, password: String) {
+    if let Err(e) = start_proxy_server(bind_addr, ipv6_subnet, password).await {
+        eprintln!("Error: {}", e);
+    }
 }
