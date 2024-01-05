@@ -9,10 +9,12 @@ use hyper::{
 use hyper_util::rt::TokioIo;
 use ipnet::Ipv6Net;
 use rand::{self, seq::IteratorRandom, Rng};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpSocket};
+use tokio::sync::Mutex;
 
 // proxy http request
 async fn proxy_http(
@@ -67,11 +69,15 @@ async fn tunnel(
 }
 struct Ipv6Pool {
     ipv6_subnet: Ipv6Net,
+    user_ipv6_map: Mutex<HashMap<String, Ipv6Addr>>, // make user use the same ipv6 address
 }
 
 impl Ipv6Pool {
     fn new(ipv6_subnet: Ipv6Net) -> Self {
-        Self { ipv6_subnet }
+        Self {
+            ipv6_subnet,
+            user_ipv6_map: Mutex::new(HashMap::new()),
+        }
     }
 
     fn get_random_ipv6(&self) -> Ipv6Addr {
@@ -115,14 +121,26 @@ pub async fn start_proxy_server(
                                     .decode(encoded_auth_str.as_bytes())
                                     .unwrap();
                                 let decode_str = String::from_utf8(auth_bytes).unwrap();
-                                let (_username, password) = decode_str.split_once(':').unwrap();
+                                let (username, password) = decode_str.split_once(':').unwrap();
                                 // only verify password, use username to map ipv6 address
                                 if password != password {
                                     return Ok(Response::new(BoxBody::new(Full::new(
                                         "Proxy Authorization password error\n".into(),
                                     ))));
                                 }
-                                let bind_addr = ipv6_pool.get_random_ipv6_socket_addr();
+                                // use username to map ipv6 address
+                                // let mut ipv6_pool = ipv6_pool.lock().expect("lock error");
+                                let mut ipv6_user_map = ipv6_pool.user_ipv6_map.lock().await;
+                                let ipv6_addr = match ipv6_user_map.get(username) {
+                                    Some(&ipv6_addr) => ipv6_addr,
+                                    None => {
+                                        // allocate a new ipv6 address
+                                        let ipv6_addr = ipv6_pool.get_random_ipv6();
+                                        ipv6_user_map.insert(username.to_string(), ipv6_addr);
+                                        ipv6_addr
+                                    }
+                                };
+                                let bind_addr = SocketAddr::new(IpAddr::V6(ipv6_addr), 0);
                                 if req.method() == Method::CONNECT {
                                     proxy_connect(bind_addr, req).await
                                 } else {
