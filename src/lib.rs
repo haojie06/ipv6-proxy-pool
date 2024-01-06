@@ -8,7 +8,7 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use ipnet::Ipv6Net;
-use rand::{self, seq::IteratorRandom, Rng};
+use rand::{self, seq::IteratorRandom};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, ToSocketAddrs};
@@ -80,16 +80,26 @@ impl Ipv6Pool {
         }
     }
 
-    fn get_random_ipv6(&self) -> Ipv6Addr {
-        self.ipv6_subnet
-            .hosts()
-            .choose(&mut rand::thread_rng())
-            .expect("no available ipv6 address")
+    async fn get_ipv6(&self, username: String) -> Ipv6Addr {
+        let mut ipv6_user_map = self.user_ipv6_map.lock().await;
+        match ipv6_user_map.get(&username) {
+            Some(&ipv6_addr) => ipv6_addr,
+            None => {
+                // allocate a new ipv6 address
+                let ipv6_addr = self
+                    .ipv6_subnet
+                    .hosts()
+                    .choose(&mut rand::thread_rng())
+                    .expect("no available ipv6 address");
+                ipv6_user_map.insert(username, ipv6_addr);
+                ipv6_addr
+            }
+        }
     }
 
-    fn get_random_ipv6_socket_addr(&self) -> SocketAddr {
-        let port: u16 = rand::thread_rng().gen_range(1024..65535);
-        SocketAddr::new(IpAddr::V6(self.get_random_ipv6()), port)
+    async fn get_ipv6_socket_addr(&self, username: String) -> SocketAddr {
+        // let port: u16 = rand::thread_rng().gen_range(1024..65535);
+        SocketAddr::new(IpAddr::V6(self.get_ipv6(username).await), 0)
     }
 }
 
@@ -130,17 +140,8 @@ pub async fn start_proxy_server(
                                 }
                                 // use username to map ipv6 address
                                 // let mut ipv6_pool = ipv6_pool.lock().expect("lock error");
-                                let mut ipv6_user_map = ipv6_pool.user_ipv6_map.lock().await;
-                                let ipv6_addr = match ipv6_user_map.get(username) {
-                                    Some(&ipv6_addr) => ipv6_addr,
-                                    None => {
-                                        // allocate a new ipv6 address
-                                        let ipv6_addr = ipv6_pool.get_random_ipv6();
-                                        ipv6_user_map.insert(username.to_string(), ipv6_addr);
-                                        ipv6_addr
-                                    }
-                                };
-                                let bind_addr = SocketAddr::new(IpAddr::V6(ipv6_addr), 0);
+                                let bind_addr =
+                                    ipv6_pool.get_ipv6_socket_addr(username.to_string()).await;
                                 if req.method() == Method::CONNECT {
                                     proxy_connect(bind_addr, req).await
                                 } else {
