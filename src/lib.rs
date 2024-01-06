@@ -45,9 +45,24 @@ impl Ipv6Pool {
         }
     }
 
-    async fn get_ipv6_socket_addr(&self, username: String) -> SocketAddr {
+    async fn get_random_ipv6(&self) -> Ipv6Addr {
+        self.ipv6_subnet
+            .hosts()
+            .choose(&mut rand::thread_rng())
+            .expect("no available ipv6 address")
+    }
+
+    async fn get_ipv6_socket_addr(
+        &self,
+        username: String,
+        assign_ipv6_by_username: bool,
+    ) -> SocketAddr {
         // let port: u16 = rand::thread_rng().gen_range(1024..65535);
-        SocketAddr::new(IpAddr::V6(self.get_ipv6(username).await), 0)
+        if assign_ipv6_by_username {
+            SocketAddr::new(IpAddr::V6(self.get_ipv6(username).await), 0)
+        } else {
+            SocketAddr::new(IpAddr::V6(self.get_random_ipv6().await), 0)
+        }
     }
 }
 
@@ -138,22 +153,42 @@ async fn proxy_http(
     let resp = sender.send_request(req).await.unwrap();
     Ok(resp.map(|b| b.boxed()))
 }
+#[derive(Debug)]
 
-pub async fn start_proxy_server(
-    bind_addr: SocketAddr,
-    ipv6_subnet: Ipv6Net,
-    password: String,
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!("bind_addr: {}", bind_addr);
-    println!("ipv6_subnet: {}", ipv6_subnet);
-    println!("password: {}", password);
-    let listener = TcpListener::bind(bind_addr).await?;
-    let ipv6_pool = Arc::new(Ipv6Pool::new(ipv6_subnet));
+pub struct ProxyServerConfig {
+    pub bind_addr: SocketAddr,
+    pub ipv6_subnet: Ipv6Net,
+    pub password: String,
+    pub assign_ipv6_by_username: bool,
+}
+
+impl ProxyServerConfig {
+    pub fn new(
+        bind_addr: SocketAddr,
+        ipv6_subnet: Ipv6Net,
+        password: String,
+        assign_ipv6_by_username: bool,
+    ) -> Self {
+        Self {
+            bind_addr,
+            ipv6_subnet,
+            password,
+            assign_ipv6_by_username,
+        }
+    }
+}
+
+pub async fn start_proxy_server(cfg: ProxyServerConfig) -> Result<(), Box<dyn std::error::Error>> {
+    println!("start proxy server:\n{:?}", cfg);
+    let listener = TcpListener::bind(cfg.bind_addr).await?;
+    let ipv6_pool = Arc::new(Ipv6Pool::new(cfg.ipv6_subnet));
     loop {
         let (stream, addr) = listener.accept().await?;
         println!("accept request from: {}", addr);
         let ipv6_pool = ipv6_pool.clone();
         let io = TokioIo::new(stream);
+        let password_cfg = cfg.password.clone();
+        let assign_ipv6_by_username = cfg.assign_ipv6_by_username;
         tokio::spawn(async move {
             if let Err(e) = http1_server::Builder::new()
                 .serve_connection(
@@ -169,14 +204,18 @@ pub async fn start_proxy_server(
                                 let decode_str = String::from_utf8(auth_bytes).unwrap();
                                 let (username, password) = decode_str.split_once(':').unwrap();
                                 // only verify password, use username to map ipv6 address
-                                if password != password {
+                                if password_cfg != password {
                                     return Ok(Response::new(full(
                                         "Proxy Authorization password error\n",
                                     )));
                                 }
                                 // use username to map ipv6 address
-                                let bind_addr =
-                                    ipv6_pool.get_ipv6_socket_addr(username.to_string()).await;
+                                let bind_addr = ipv6_pool
+                                    .get_ipv6_socket_addr(
+                                        username.to_string(),
+                                        assign_ipv6_by_username,
+                                    )
+                                    .await;
                                 if req.method() == Method::CONNECT {
                                     proxy_connect(bind_addr, req).await
                                 } else {
